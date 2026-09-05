@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apipriceindex-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for live, verified LLM API prices from apipriceindex.com (CC BY 4.0)"
 readme = "README.md"
 license = { text = "MIT" }

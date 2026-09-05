@@ -53,3 +53,6 @@ Environment: `APIPRICEINDEX_URL` overrides the dataset URL (testing).
 
 Code: MIT. Price data: [CC BY 4.0](https://apipriceindex.com/use-this-data/),
 attribution "API Price Index".
+
+<!-- mcp-name: io.github.apipriceindex/mcp -->
+

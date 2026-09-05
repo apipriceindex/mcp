@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.apipriceindex/mcp",
+  "description": "Live, verified LLM API prices for AI agents: search models, get prices with source and verification date, estimate workload costs. Data from apipriceindex.com (CC BY 4.0).",
+  "repository": {
+    "url": "https://github.com/apipriceindex/mcp",
+    "source": "github"
+  },
+  "version": "0.1.1",
+  "websiteUrl": "https://apipriceindex.com",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "apipriceindex-mcp",
+      "version": "0.1.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
