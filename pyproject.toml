@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apipriceindex-mcp"
+version = "0.1.0"
+description = "MCP server for live, verified LLM API prices from apipriceindex.com (CC BY 4.0)"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "API Price Index", email = "contact@apipriceindex.com" }]
+requires-python = ">=3.10"
+dependencies = ["mcp>=2"]
+keywords = ["mcp", "llm", "pricing", "api", "tokens"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://apipriceindex.com"
+Repository = "https://github.com/apipriceindex/mcp"
+Dataset = "https://apipriceindex.com/use-this-data/"
+
+[project.scripts]
+apipriceindex-mcp = "apipriceindex_mcp:main"
+
+[tool.setuptools]
+py-modules = ["apipriceindex_mcp"]
