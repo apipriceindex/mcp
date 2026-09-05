@@ -1,0 +1,22 @@
+# Publication au registre MCP officiel par OIDC GitHub Actions : aucun token,
+# l'identité du workflow suffit pour le namespace io.github.apipriceindex/*.
+# Déclencheurs : manuel (bouton Run workflow) + à chaque release publiée
+# (après la release, PyPI porte déjà le marqueur mcp-name que le registre vérifie).
+name: mcp-registry
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mcp-publisher
+        run: curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+      - run: ./mcp-publisher login github-oidc
+      - run: ./mcp-publisher publish
