@@ -1,0 +1,19 @@
+# Publication PyPI par Trusted Publishing (OIDC) : aucun token nulle part.
+# Déclencheur : publier une release GitHub → build du paquet → upload PyPI.
+# Le publisher est déclaré côté PyPI (repo apipriceindex/mcp, env "pypi").
+name: publish
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # l'identité OIDC que PyPI vérifie
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build
+      - uses: pypa/gh-action-pypi-publish@release/v1
