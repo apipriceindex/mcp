@@ -1,15 +1,22 @@
 # Publication au registre MCP officiel par OIDC GitHub Actions : aucun token,
 # l'identité du workflow suffit pour le namespace io.github.apipriceindex/*.
-# Déclencheurs : manuel (bouton Run workflow) + à chaque release publiée
-# (après la release, PyPI porte déjà le marqueur mcp-name que le registre vérifie).
+# Déclencheurs : manuel (bouton Run workflow) + à la FIN du workflow `publish`
+# (PyPI), quand il a réussi. Avant le 21/10, le déclencheur était la release
+# elle-même : les deux workflows partaient ensemble et, pour la 0.2.0, le
+# registre a vérifié PyPI onze secondes avant que la version y arrive (échec,
+# relance à la main). Le registre lit la description publiée sur pypi.org (le
+# marqueur mcp-name) : il doit passer après PyPI, et laisser au CDN le temps de
+# servir la nouvelle version (cinq essais à 30 s d'écart).
 name: mcp-registry
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: [publish]
+    types: [completed]
 
 jobs:
   registry:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -19,4 +26,11 @@ jobs:
       - name: Install mcp-publisher
         run: curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
       - run: ./mcp-publisher login github-oidc
-      - run: ./mcp-publisher publish
+      - name: Publish (retries while PyPI propagates)
+        run: |
+          for i in 1 2 3 4 5; do
+            ./mcp-publisher publish && exit 0
+            echo "Registry publish failed (attempt $i), PyPI may not serve the new version yet; retrying in 30 s."
+            sleep 30
+          done
+          exit 1
