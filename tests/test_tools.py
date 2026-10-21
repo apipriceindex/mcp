@@ -110,7 +110,39 @@ verifie(r.get("speed_source") and r.get("availability_source") and r.get("intell
 verifie("error" in a._offers("fast-1", ["mood"]), "colonne inconnue : erreur")
 verifie("error" in a._offers("nothing-like-this"), "modèle inconnu : erreur")
 
-# 5. Index injoignable : erreur, pas de cache resservi
+# 5. compare_models, cheapest_at_level, price_changes
+r = a._compare(["fast-1", "slow-2"], 10, 1, 0)
+c = {x["model"]: x for x in r["models"]}
+verifie(c["fast-1"]["lowest_input"] == {"usd_per_mtok": 0.05, "provider": "Beta"} and c["fast-1"]["providers"] == 2,
+        f"compare : meilleur prix et hébergeur : {c['fast-1']}")
+verifie(c["fast-1"]["fastest"] == {"output_tokens_per_s_p50": 250.0, "provider": "Alpha"}, "compare : le plus rapide")
+verifie(r["best"]["lowest_input"] == "fast-1" and r["best"]["monthly_usd"] == "fast-1", f"compare : best {r['best']}")
+verifie(r.get("intelligence_credit") and r.get("speed_source"), "compare : crédit et source")
+verifie("error" in a._compare(["fast-1"]) and "error" in a._compare(["fast-1", "nope-x"]), "compare : erreurs")
+r = a._at_level(min_score=150)
+verifie([x["model"] for x in r["models"]] == ["fast-1"] and r["models"][0]["cheapest"]["provider"] == "Beta",
+        f"niveau : le moins cher qui atteint 150 : {r['models']}")
+verifie(r.get("intelligence_credit"), "niveau : crédit Epoch")
+verifie(a._at_level(as_good_as="fast-1")["min_score"] == 155, "niveau : as_good_as prend la note du modèle")
+verifie("error" in a._at_level(as_good_as="slow-2") and "error" in a._at_level(), "niveau : erreurs")
+OLD = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+RECENT = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%d")
+CSV = ("id,provider,model,date,input_usd_per_mtok,output_usd_per_mtok\n"
+       f"alpha:fast-1,alpha,fast-1,{OLD},0.2,0.6\nalpha:fast-1,alpha,fast-1,{RECENT},0.1,0.3\n"
+       f"beta:fast-1,beta,fast-1,{OLD},0.05,0.2\n"
+       f"gamma:slow-2,gamma,slow-2,{OLD},1.0,4.0\ngamma:slow-2,gamma,slow-2,{RECENT},2.0,8.0\n"
+       f"delta:new,delta,new,{RECENT},1,1\n")
+INDEX["models"][2]["release_date"] = RECENT
+a._fetch = lambda url, as_text=False: CSV if url.endswith(".csv") else (DEALS if url.endswith("deals.json") else INDEX)
+r = a._changes(7, "all")
+verifie([(x["id"], x["change_pct"]) for x in r["price_changes"]] == [("alpha:fast-1", -50.0), ("gamma:slow-2", 100.0)],
+        f"changements : {r['price_changes']}")
+verifie([x["model"] for x in r["new_models"]] == ["slow-2"], f"nouveaux modèles : {r.get('new_models')}")
+verifie([x["id"] for x in a._changes(7, "drops")["price_changes"]] == ["alpha:fast-1"], "baisses seules")
+verifie([x["id"] for x in a._changes(7, "rises")["price_changes"]] == ["gamma:slow-2"], "hausses seules")
+verifie("error" in a._changes(7, "sideways"), "sens inconnu : erreur")
+
+# 6. Index injoignable : erreur, pas de cache resservi
 import urllib.request  # noqa: E402
 real = urllib.request.urlopen
 urllib.request.urlopen = lambda *x, **k: (_ for _ in ()).throw(OSError("down"))

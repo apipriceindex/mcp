@@ -5,8 +5,10 @@ apipriceindex-mcp — serveur MCP de l'API Price Index.
 Expose l'index ouvert (apipriceindex.com, CC BY 4.0) à tout agent compatible
 MCP. Outils : chercher un modèle (avec filtres prix, capacités, vitesse),
 obtenir son prix vérifié (avec source et date), estimer la facture mensuelle
-d'un workload, lister les deals du moment (gratuits, remises, crédits) et
-rendre le tableau des offres d'un modèle aux colonnes choisies (0.2.0).
+d'un workload ; depuis 0.2.0, lister les deals du moment (gratuits, remises,
+crédits), rendre le tableau des offres d'un modèle aux colonnes choisies,
+comparer deux à quatre modèles, trouver le moins cher à un niveau de la note
+Epoch, et lister les baisses, hausses et nouveaux modèles sur N jours.
 
 Règles maison :
 - La donnée est lue en direct sur /api/all.json (cache mémoire 15 min).
@@ -33,6 +35,7 @@ from datetime import datetime, timezone
 
 DATA_URL = os.environ.get("APIPRICEINDEX_URL", "https://apipriceindex.com/api/all.json")
 DEALS_URL = os.environ.get("APIPRICEINDEX_DEALS_URL", DATA_URL.rsplit("/", 1)[0] + "/deals.json")
+HISTORY_URL = os.environ.get("APIPRICEINDEX_HISTORY_URL", DATA_URL.rsplit("/", 1)[0] + "/pricing-history.csv")
 CACHE_TTL_S = 15 * 60
 STALE_DAYS = 14
 SEARCH_LIMIT = 20
@@ -51,9 +54,10 @@ class IndexUnavailable(RuntimeError):
     pass
 
 
-def _fetch(url: str) -> dict:
-    """JSON avec cache 15 min par URL. Lève IndexUnavailable si la source est
-    morte — le cache expiré n'est pas resservi : mieux vaut une erreur qu'un prix faux."""
+def _fetch(url: str, as_text: bool = False):
+    """JSON (ou texte) avec cache 15 min par URL. Lève IndexUnavailable si la
+    source est morte — le cache expiré n'est pas resservi : mieux vaut une erreur
+    qu'un prix faux."""
     now = time.monotonic()
     hit = _cache.get(url)
     if hit is not None and now - hit[0] < CACHE_TTL_S:
@@ -61,7 +65,8 @@ def _fetch(url: str) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "apipriceindex-mcp/0.2"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8"))
+            raw = r.read().decode("utf-8")
+            data = raw if as_text else json.loads(raw)
     except Exception as e:  # réseau, HTTP, JSON : même verdict — indisponible
         raise IndexUnavailable(
             f"Price index unreachable ({url}): {e}. "
@@ -77,6 +82,10 @@ def _fetch_index() -> dict:
 
 def _fetch_deals() -> dict:
     return _fetch(DEALS_URL)
+
+
+def _fetch_history() -> str:
+    return _fetch(HISTORY_URL, as_text=True)
 
 
 def _meta(index: dict) -> dict:
@@ -405,6 +414,208 @@ def _offers(model: str, columns: list[str] | None = None) -> dict:
     return out
 
 
+# --------------------------- résolution d'un modèle ---------------------------
+def _find(models: list[dict], name: str) -> dict | None:
+    """Une offre du modèle demandé : id exact, puis modèle de base, puis nom."""
+    q = (name or "").strip().lower()
+    if not q:
+        return None
+    return (next((m for m in models if m.get("id", "").lower() == q), None)
+            or next((m for m in models if (m.get("base_model") or "").lower() == q), None)
+            or next((m for m in models if q in str(m.get("name", "")).lower()), None))
+
+
+def _family(models: list[dict], seed: dict) -> list[dict]:
+    base = seed.get("base_model")
+    return [m for m in models if base and m.get("base_model") == base] or [seed]
+
+
+def _best(offers: list[dict], key, high: bool = False):
+    vals = [(key(m), m) for m in offers if key(m) is not None]
+    if not vals:
+        return None, None
+    v, m = (max if high else min)(vals, key=lambda x: x[0])
+    return v, (m.get("provider") or {}).get("name")
+
+
+# ------------------------------ compare_models (0.2.0) -------------------------
+def _compare(models: list[str], input_mtok: float | None = None, output_mtok: float | None = None,
+             cache_pct: float = 0.0) -> dict:
+    index = _fetch_index()
+    pool = index.get("models", [])
+    names = [n for n in (models or []) if n and n.strip()]
+    if not 2 <= len(names) <= 4:
+        return {"error": "Give two to four models.", "hint": "Find ids with search_models.", **_meta(index)}
+    missing = [n for n in names if _find(pool, n) is None]
+    if missing:
+        return {"error": f"Not tracked by the index: {', '.join(missing)}. No price invented.",
+                "hint": "Find valid ids with search_models.", **_meta(index)}
+    cols = []
+    for n in names:
+        seed = _find(pool, n)
+        fam = [m for m in _family(pool, seed) if _blended(m) is not None]
+        price = lambda k: (lambda m: (m.get("pricing") or {}).get(k))  # noqa: E731
+        inp, inp_h = _best(fam, price("input_per_mtok"))
+        out, out_h = _best(fam, price("output_per_mtok"))
+        cac, cac_h = _best(fam, price("cached_input_per_mtok"))
+        tps, tps_h = _best(fam, _tps, high=True)
+        intel = next((m.get("intelligence") for m in fam + [seed] if m.get("intelligence")), None)
+        col = {
+            "model": seed.get("base_model") or seed["id"],
+            "name": seed.get("name"),
+            "providers": len(fam),
+            "lowest_input": {"usd_per_mtok": inp, "provider": inp_h},
+            "lowest_output": {"usd_per_mtok": out, "provider": out_h},
+            "lowest_cache": {"usd_per_mtok": cac, "provider": cac_h},
+            "fastest": {"output_tokens_per_s_p50": tps, "provider": tps_h},
+            "context_window": max([m.get("context_window") or 0 for m in fam + [seed]]) or None,
+            "license": seed.get("license"),
+            "open_weights": seed.get("open_weights"),
+            "intelligence_eci": (intel or {}).get("score"),
+        }
+        if input_mtok is not None and output_mtok is not None and fam:
+            costs = [(_monthly_cost(m["pricing"], input_mtok, output_mtok, cache_pct)[0], m) for m in fam]
+            c, m = min(costs, key=lambda x: x[0])
+            col["monthly_usd"] = {"usd": round(c, 2), "provider": (m.get("provider") or {}).get("name")}
+        cols.append(col)
+    best = {}
+    for label, get, high in (("lowest_input", lambda c: c["lowest_input"]["usd_per_mtok"], False),
+                             ("lowest_output", lambda c: c["lowest_output"]["usd_per_mtok"], False),
+                             ("lowest_cache", lambda c: c["lowest_cache"]["usd_per_mtok"], False),
+                             ("fastest", lambda c: c["fastest"]["output_tokens_per_s_p50"], True),
+                             ("intelligence_eci", lambda c: c["intelligence_eci"], True),
+                             ("monthly_usd", lambda c: (c.get("monthly_usd") or {}).get("usd"), False)):
+        vals = [(get(c), c["model"]) for c in cols if get(c) is not None]
+        if vals:
+            best[label] = (max if high else min)(vals, key=lambda x: x[0])[1]
+    out = {"models": cols, "best": best,
+           "note": "Lowest price across each model's providers, with the provider that gives it. "
+                   "Cost only — the index does not judge quality beyond the Epoch score.",
+           **_meta(index)}
+    if any(c["fastest"]["output_tokens_per_s_p50"] is not None for c in cols):
+        out["speed_source"] = SPEED_NOTE
+    if any(c["intelligence_eci"] is not None for c in cols):
+        out["intelligence_credit"] = INTEL_CREDIT
+    if input_mtok is not None and output_mtok is not None:
+        out["workload"] = {"input_mtok": input_mtok, "output_mtok": output_mtok, "cache_pct": cache_pct}
+    return out
+
+
+# ---------------------------- cheapest_at_level (0.2.0) ------------------------
+def _at_level(min_score: float | None = None, as_good_as: str | None = None,
+              open_weights: bool | None = None, limit: int = 5) -> dict:
+    index = _fetch_index()
+    pool = index.get("models", [])
+    ref = None
+    if as_good_as:
+        seed = _find(pool, as_good_as)
+        ref = next((m for m in _family(pool, seed) if m.get("intelligence")), None) if seed else None
+        if ref is None:
+            return {"error": f"'{as_good_as}' has no Epoch score in the index.",
+                    "hint": "Pass min_score instead, or another model.", **_meta(index)}
+        min_score = ref["intelligence"]["score"]
+    if min_score is None:
+        return {"error": "Give min_score (an Epoch Capabilities Index score) or as_good_as (a model).",
+                **_meta(index)}
+    bases: dict[str, list[dict]] = {}
+    for m in pool:
+        sc = _intel(m)
+        if sc is None or sc < min_score or _blended(m) is None:
+            continue
+        if open_weights is not None and bool(m.get("open_weights")) != open_weights:
+            continue
+        bases.setdefault(m.get("base_model") or m["id"], []).append(m)
+    rows = []
+    for base, offers in bases.items():
+        c = min(offers, key=_blended)
+        it = c["intelligence"]
+        rows.append({"model": base, "name": c.get("name"), "intelligence_eci": it.get("score"),
+                     "eci_interval": [it.get("ci_low"), it.get("ci_high")],
+                     "cheapest": {"id": c["id"], "provider": (c.get("provider") or {}).get("name"),
+                                  "input_usd_per_mtok": c["pricing"]["input_per_mtok"],
+                                  "output_usd_per_mtok": c["pricing"]["output_per_mtok"],
+                                  "blended_usd_per_mtok": round(_blended(c), 4),
+                                  "verified_at": c["pricing"].get("verified_at")},
+                     "providers": len(offers), "page": c.get("page")})
+    rows.sort(key=lambda r: r["cheapest"]["blended_usd_per_mtok"])
+    out = {"min_score": min_score, "models": rows[:max(1, min(limit, 25))], "total": len(rows),
+           "note": "Models whose Epoch Capabilities Index point score reaches min_score, cheapest first "
+                   "(lowest input + output price per million tokens among their providers). Scores carry "
+                   "an interval: models a few points apart may not differ.",
+           "intelligence_credit": INTEL_CREDIT, **_meta(index)}
+    if ref is not None:
+        out["reference"] = {"model": ref.get("base_model") or ref["id"], "intelligence_eci": min_score,
+                            "cheapest_blended_usd_per_mtok": round(min((_blended(m) for m in _family(pool, ref)
+                                                                         if _blended(m) is not None), default=0), 4)}
+    return out
+
+
+# ------------------------------ price_changes (0.2.0) --------------------------
+def _changes(days: int = 7, direction: str = "all", include_new_models: bool = True) -> dict:
+    index = _fetch_index()
+    direction = (direction or "all").strip().lower()
+    if direction not in ("all", "drops", "rises"):
+        return {"error": f"Unknown direction '{direction}'.", "hint": "Use all, drops or rises.", **_meta(index)}
+    days = max(1, min(int(days or 7), 90))
+    start = (datetime.now(timezone.utc).date().toordinal() - days)
+    series: dict[str, list[tuple[str, float, float]]] = {}
+    lines = _fetch_history().splitlines()
+    head = lines[0].split(",") if lines else []
+    ix = {h: i for i, h in enumerate(head)}
+    for line in lines[1:]:
+        f = line.split(",")
+        try:
+            series.setdefault(f[ix["id"]], []).append(
+                (f[ix["date"]], float(f[ix["input_usd_per_mtok"]]), float(f[ix["output_usd_per_mtok"]])))
+        except (KeyError, IndexError, ValueError):
+            continue
+    by_id = {m["id"]: m for m in index.get("models", [])}
+    moves = []
+    for mid, pts in series.items():
+        pts.sort()
+        before = [p for p in pts if datetime.strptime(p[0], "%Y-%m-%d").date().toordinal() < start]
+        if not before:
+            continue  # apparu pendant la période : nouveau, pas un changement
+        ref, cur = before[-1], pts[-1]
+        b0, b1 = ref[1] + ref[2], cur[1] + cur[2]
+        if b0 <= 0 or abs(b1 - b0) < 1e-12:
+            continue
+        pct = (b1 - b0) / b0 * 100
+        if (direction == "drops" and pct >= 0) or (direction == "rises" and pct <= 0):
+            continue
+        m = by_id.get(mid, {})
+        moves.append({"id": mid, "model": m.get("base_model"), "provider": (m.get("provider") or {}).get("name"),
+                      "changed_on": cur[0], "before": {"input": ref[1], "output": ref[2]},
+                      "now": {"input": cur[1], "output": cur[2]}, "change_pct": round(pct, 1),
+                      "reprices_often": bool((m.get("pricing") or {}).get("reprices_often")),
+                      "page": m.get("page")})
+    moves.sort(key=lambda x: x["change_pct"] if direction != "rises" else -x["change_pct"])
+    out = {"days": days, "direction": direction, "price_changes": moves[:RANK_LIMIT], "total_changes": len(moves),
+           "note": "Change on input + output USD per million tokens, from the last recorded price before the period "
+                   "to today's. Full series: https://apipriceindex.com/api/pricing-history.csv",
+           **_meta(index)}
+    if include_new_models:
+        new: dict[str, list[dict]] = {}
+        for m in index.get("models", []):
+            rd = m.get("release_date")
+            try:
+                ok = rd and datetime.strptime(rd[:10], "%Y-%m-%d").date().toordinal() >= start
+            except ValueError:
+                ok = False
+            if ok and _blended(m) is not None:
+                new.setdefault(m.get("base_model") or m["id"], []).append(m)
+        rows = []
+        for base, offers in new.items():
+            c = min(offers, key=_blended)
+            rows.append({"model": base, "name": c.get("name"), "release_date": c.get("release_date"),
+                         "providers": len(offers), "cheapest": {"provider": (c.get("provider") or {}).get("name"),
+                         "input_usd_per_mtok": c["pricing"]["input_per_mtok"],
+                         "output_usd_per_mtok": c["pricing"]["output_per_mtok"]}, "page": c.get("page")})
+        rows.sort(key=lambda r: r["release_date"] or "", reverse=True)
+        out["new_models"] = rows[:RANK_LIMIT]
+    return out
+
+
 def build_server():
     """Construit le serveur MCP (import différé : la logique reste testable sans SDK).
     SDK mcp >= 2 (MCPServer, ex-FastMCP)."""
@@ -476,6 +687,41 @@ def build_server():
         come from OpenRouter with their window; prices from each host's source.
         """
         return _offers(model, columns)
+
+    @mcp.tool()
+    def compare_models(models: list[str], input_mtok: float | None = None, output_mtok: float | None = None,
+                       cache_pct: float = 0) -> dict:
+        """Compare two to four models side by side.
+
+        For each: lowest input, output and cached-input price with the provider
+        that gives it, number of providers, fastest provider (OpenRouter median),
+        context window, license, Epoch Capabilities Index score; `best` names the
+        winner of each row. Give monthly volumes (millions of tokens) to add the
+        monthly cost at each model's cheapest provider.
+        """
+        return _compare(models, input_mtok, output_mtok, cache_pct)
+
+    @mcp.tool()
+    def cheapest_at_level(min_score: float | None = None, as_good_as: str | None = None,
+                          open_weights: bool | None = None, limit: int = 5) -> dict:
+        """Cheapest models that reach a given intelligence level.
+
+        Level = Epoch Capabilities Index score (Epoch AI, CC BY 4.0): pass
+        min_score, or as_good_as a model to use its score. Returns the cheapest
+        models at or above it (lowest input + output price among their
+        providers), optionally open weights only.
+        """
+        return _at_level(min_score, as_good_as, open_weights, limit)
+
+    @mcp.tool()
+    def price_changes(days: int = 7, direction: str = "all", include_new_models: bool = True) -> dict:
+        """Price drops and rises over the last N days, and the models released in that time.
+
+        direction: all, drops or rises. Each change compares the last recorded
+        price before the period with today's (input + output per million
+        tokens). New models come with their cheapest provider.
+        """
+        return _changes(days, direction, include_new_models)
 
     return mcp
 
