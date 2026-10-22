@@ -645,8 +645,9 @@ def build_server():
         """Get the verified price of one model (USD per million tokens).
 
         Returns input/output/cached-input prices with verification date,
-        cross-check confidence and source URL. Prices are re-checked daily
-        against official pricing pages. Data: apipriceindex.com, CC BY 4.0.
+        cross-check confidence and source URL. Prices are re-checked daily,
+        from each provider's own price list or from OpenRouter's per-provider
+        data; source_url says which. Data: apipriceindex.com, CC BY 4.0.
         """
         return _price(model_id)
 

@@ -7,7 +7,8 @@ cheapest model at least as good as GPT-5.6 Sol?"* or *"what would 200M input /
 15M output tokens a month cost me on Sonnet vs GPT?"* and it answers from
 today's index — every price with its verification date, cross-check confidence
 and source URL. Data from [apipriceindex.com](https://apipriceindex.com/use-this-data/)
-(CC BY 4.0, re-checked daily against official pricing pages).
+(CC BY 4.0, re-checked daily from each provider's own price list or from
+OpenRouter's per-provider data; every price names its source in `source_url`).
 
 ## Tools
 
@@ -64,6 +65,10 @@ Environment: `APIPRICEINDEX_URL` overrides the dataset URL (testing);
 
 ## Changelog
 
+- **0.2.1** — `get_price` and this README now say where prices are read:
+  each provider's own price list, or OpenRouter's per-provider data, named
+  by `source_url`. They said "official pricing pages", which was true of
+  about one price in four. No change to the tools or their answers.
 - **0.2.0** — `list_deals`, `offers_table`, `compare_models`,
   `cheapest_at_level`, `price_changes`; `search_models` filters by max price,
   capabilities and min speed; Epoch score, speed and availability where known.
