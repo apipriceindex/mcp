@@ -8,7 +8,9 @@ obtenir son prix vérifié (avec source et date), estimer la facture mensuelle
 d'un workload ; depuis 0.2.0, lister les deals du moment (gratuits, remises,
 crédits), rendre le tableau des offres d'un modèle aux colonnes choisies,
 comparer deux à quatre modèles, trouver le moins cher à un niveau de la note
-Epoch, et lister les baisses, hausses et nouveaux modèles sur N jours.
+Epoch, et lister les baisses, hausses et nouveaux modèles sur N jours ; depuis
+0.3.0, ce que chaque hôte sert d'un modèle à poids ouverts (précision des
+poids, contexte, sortie max), chaque valeur avec son état, sa source et sa date.
 
 Règles maison :
 - La donnée est lue en direct sur /api/all.json (cache mémoire 15 min).
@@ -46,6 +48,12 @@ INTEL_CREDIT = ("Intelligence: Epoch Capabilities Index by Epoch AI (https://epo
                 "CC BY 4.0 — credit Epoch AI when you reuse it")
 SPEED_NOTE = "Speed: OpenRouter, median of the last 30 minutes before the daily read"
 UPTIME_NOTE = "Availability: OpenRouter, share of successful requests over 24 hours"
+SERVED_NOTE = ("Weights precision, context and max output (open-weight models): read at the host's own "
+               "catalogue or docs where its terms allow, otherwise as the host declares to OpenRouter. "
+               "state: published; not_stated (the host's source does not state it); not_read (the host's "
+               "terms forbid automatic reading and OpenRouter has no value); to_check (not checked at the "
+               "host yet). served.maker holds the maker's values for comparison.")
+SERVED_FIELDS = ("precision", "context", "max_output")
 
 _cache: dict = {}
 
@@ -62,7 +70,7 @@ def _fetch(url: str, as_text: bool = False):
     hit = _cache.get(url)
     if hit is not None and now - hit[0] < CACHE_TTL_S:
         return hit[1]
-    req = urllib.request.Request(url, headers={"User-Agent": "apipriceindex-mcp/0.2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "apipriceindex-mcp/0.3"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             raw = r.read().decode("utf-8")
@@ -236,6 +244,9 @@ def _price(model_id: str) -> dict:
         out["availability"] = m["availability"]
     if m.get("served"):
         out["served"] = m["served"]
+        # 0.3.0 : précision, contexte, sortie max servis, avec état, source et date.
+        if any(k in m["served"] for k in SERVED_FIELDS):
+            out["served_source"] = SERVED_NOTE
     if m.get("intelligence"):
         out["intelligence"] = m["intelligence"]
         out["intelligence_credit"] = INTEL_CREDIT
@@ -355,6 +366,11 @@ def _deals(kind: str = "all", ending_within_days: int | None = None) -> dict:
 
 
 # ------------------------------ offers_table (0.2.0) ---------------------------
+def _servi(m: dict, k: str):
+    """Valeur d'une case servie (0.3.0) ; None si l'index n'en donne pas."""
+    return ((m.get("served") or {}).get(k) or {}).get("value")
+
+
 _COLUMNS = {
     "input": lambda m: (m.get("pricing") or {}).get("input_per_mtok"),
     "output": lambda m: (m.get("pricing") or {}).get("output_per_mtok"),
@@ -363,14 +379,18 @@ _COLUMNS = {
     "speed": lambda m: _tps(m),
     "first_token": lambda m: (m.get("speed") or {}).get("first_token_ms_p50"),
     "uptime": lambda m: (m.get("availability") or {}).get("uptime_24h_pct"),
-    "context": lambda m: m.get("context_window"),
+    # 0.3.0 : ce que l'hôte sert (served.*) quand l'index le donne, sinon la fiche.
+    "precision": lambda m: _servi(m, "precision"),
+    "context": lambda m: _servi(m, "context") if "context" in (m.get("served") or {}) else m.get("context_window"),
+    "max_output": lambda m: _servi(m, "max_output") if "max_output" in (m.get("served") or {}) else m.get("max_output"),
     "verified_at": lambda m: (m.get("pricing") or {}).get("verified_at"),
 }
 _UNITS = {"input": "USD per million tokens", "output": "USD per million tokens",
           "cache": "USD per million cached input tokens", "discount": "% off the host's list price",
           "speed": "output tokens per second, median (OpenRouter, 30 min)",
           "first_token": "milliseconds to first token, median (OpenRouter, 30 min)",
-          "uptime": "% successful requests over 24 h (OpenRouter)", "context": "tokens",
+          "uptime": "% successful requests over 24 h (OpenRouter)", "context": "tokens served",
+          "precision": "weights precision served (fp8, fp4, bf16…)", "max_output": "tokens served",
           "verified_at": "date the price was checked"}
 DEFAULT_COLUMNS = ["input", "output", "cache", "speed", "uptime", "verified_at"]
 
@@ -393,8 +413,15 @@ def _offers(model: str, columns: list[str] | None = None) -> dict:
     base = seed.get("base_model")
     offers = [m for m in models if base and m.get("base_model") == base] or [seed]
     offers.sort(key=lambda m: (_blended(m) is None, _blended(m) or 0))
-    rows = [{"provider": (m.get("provider") or {}).get("name"), "id": m["id"],
-             **{c: _COLUMNS[c](m) for c in cols}} for m in offers]
+    rows = []
+    for m in offers:
+        row = {"provider": (m.get("provider") or {}).get("name"), "id": m["id"], **{c: _COLUMNS[c](m) for c in cols}}
+        # Une case servie vide dit pourquoi (0.3.0) : not_stated, not_read, to_check.
+        for c in cols:
+            sv = (m.get("served") or {}).get(c)
+            if c in SERVED_FIELDS and isinstance(sv, dict) and row.get(c) is None:
+                row[f"{c}_state"] = sv.get("state")
+        rows.append(row)
     out = {
         "model": base or seed["id"],
         "offers": rows,
@@ -407,6 +434,8 @@ def _offers(model: str, columns: list[str] | None = None) -> dict:
         out["speed_source"] = SPEED_NOTE
     if "uptime" in cols:
         out["availability_source"] = UPTIME_NOTE
+    if any(c in SERVED_FIELDS for c in cols):
+        out["served_source"] = SERVED_NOTE
     intel = next((m.get("intelligence") for m in offers if m.get("intelligence")), None)
     if intel:
         out["intelligence"] = {k: intel.get(k) for k in ("eci", "score", "ci_low", "ci_high", "rank", "ranked_models")}
@@ -647,7 +676,10 @@ def build_server():
         Returns input/output/cached-input prices with verification date,
         cross-check confidence and source URL. Prices are re-checked daily,
         from each provider's own price list or from OpenRouter's per-provider
-        data; source_url says which. Data: apipriceindex.com, CC BY 4.0.
+        data; source_url says which. For open-weight models, served.precision,
+        served.context and served.max_output say what this host serves, each
+        with its state (published, not_stated, not_read, to_check), source and
+        date. Data: apipriceindex.com, CC BY 4.0.
         """
         return _price(model_id)
 
@@ -683,9 +715,12 @@ def build_server():
 
         model: a model id, base model or name (find it with search_models).
         columns: any of input, output, cache, discount, speed, first_token,
-        uptime, context, verified_at (default: input, output, cache, speed,
-        uptime, verified_at). Rows are sorted cheapest first. Speed and uptime
-        come from OpenRouter with their window; prices from each host's source.
+        uptime, precision, context, max_output, verified_at (default: input,
+        output, cache, speed, uptime, verified_at). Rows are sorted cheapest
+        first. Speed and uptime come from OpenRouter with their window; prices
+        from each host's source; precision, context and max_output from the
+        host's own catalogue or docs where its terms allow, otherwise from
+        OpenRouter, and an empty one comes with <column>_state saying why.
         """
         return _offers(model, columns)
 

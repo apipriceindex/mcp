@@ -1,4 +1,4 @@
-"""Tests sans réseau des outils de apipriceindex-mcp (0.2.0).
+"""Tests sans réseau des outils de apipriceindex-mcp (0.3.0).
 
 Lancement : python3 tests/test_tools.py — aucune dépendance (le SDK `mcp`
 n'est pas importé : la logique vit dans des fonctions pures).
@@ -11,6 +11,8 @@ Ce que le test tient :
   gratuits d'abord ;
 - offers_table : colonnes choisies, moins cher d'abord, sources de la vitesse
   et de la disponibilité, crédit Epoch quand la note est là ;
+- 0.3.0 : précision, contexte et sortie max servis (served.*) dans get_price
+  avec leur source, colonnes precision et max_output, état d'une case vide ;
 - aucune note sans son crédit ; index injoignable = erreur, jamais de cache.
 """
 import sys
@@ -47,7 +49,11 @@ INDEX = {"as_of": AS_OF, "models": [
     offre("fast-1", "alpha", 0.1, 0.3, capabilities=["text", "function-calling"], served={"tools": True, "reasoning": True},
           speed={"tokens_per_s_p50": 250.0, "first_token_ms_p50": 300}, availability={"uptime_24h_pct": 99.9},
           intelligence=INTEL),
-    offre("fast-1", "beta", 0.05, 0.2, speed={"tokens_per_s_p50": 80.0, "first_token_ms_p50": 900}, intelligence=INTEL),
+    offre("fast-1", "beta", 0.05, 0.2, speed={"tokens_per_s_p50": 80.0, "first_token_ms_p50": 900}, intelligence=INTEL,
+          served={"quantization": None, "precision": {"value": None, "state": "not_stated", "source": "host_catalogue"},
+                  "context": {"value": 65536, "state": "published", "source": "host_catalogue"},
+                  "max_output": {"value": 8192, "state": "published", "source": "openrouter"},
+                  "maker": {"precision": "bf16", "context": 131072}}),
     offre("slow-2", "gamma", 2.0, 8.0, capabilities=["text", "vision"]),
     {"id": "delta:unpriced", "name": "unpriced", "base_model": "unpriced", "provider": {"id": "delta", "name": "Delta"},
      "pricing": None},
@@ -108,6 +114,14 @@ verifie(r["offers"][1]["speed"] == 250.0 and r["offers"][1]["uptime"] == 99.9 an
         f"colonnes : {r['offers']}")
 verifie(r.get("speed_source") and r.get("availability_source") and r.get("intelligence_credit"), "sources et crédit")
 verifie("error" in a._offers("fast-1", ["mood"]), "colonne inconnue : erreur")
+r = a._offers("fast-1", ["precision", "context", "max_output"])
+b_, al = r["offers"][0], r["offers"][1]
+verifie(b_["precision"] is None and b_.get("precision_state") == "not_stated" and b_["context"] == 65536
+        and b_["max_output"] == 8192 and "served_source" in r, f"cases servies : {r}")
+verifie(al["context"] == 131072 and "precision_state" not in al, f"sans couche servie, la fiche : {al}")
+pr = a._price("beta:fast-1")
+verifie(pr["served"]["context"]["value"] == 65536 and "served_source" in pr, f"get_price servi : {pr.get('served')}")
+verifie("served_source" not in a._price("alpha:fast-1"), "note servie sans case servie")
 verifie("error" in a._offers("nothing-like-this"), "modèle inconnu : erreur")
 
 # 5. compare_models, cheapest_at_level, price_changes
@@ -160,4 +174,5 @@ finally:
 if ECHECS:
     print("\n".join("✗ " + e for e in ECHECS))
     sys.exit(1)
-print("✓ apipriceindex-mcp : outils 0.1 inchangés, filtres, deals, tableau d'offres, sources et crédit Epoch tenus")
+print("✓ apipriceindex-mcp : outils 0.1 inchangés, filtres, deals, tableau d'offres, sources et crédit Epoch tenus, "
+      "cases servies (0.3.0) avec leur état et leur source")

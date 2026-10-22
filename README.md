@@ -15,10 +15,10 @@ OpenRouter's per-provider data; every price names its source in `source_url`).
 | Tool | What it does |
 |---|---|
 | `search_models` | Find model ids by name/provider; filter by context window, open weights, max price (input + output), capabilities (tools, reasoning, vision, json) and min speed |
-| `get_price` | Verified price of one model: input/output/cached input USD per Mtok, `verified_at`, `confidence`, source; speed, availability and Epoch score when known |
+| `get_price` | Verified price of one model: input/output/cached input USD per Mtok, `verified_at`, `confidence`, source; speed, availability and Epoch score when known; for open-weight models, the weights precision, context and max output the host serves, each with its state, source and date |
 | `estimate_cost` | Monthly bill of a workload; ranks chosen models — or the whole catalog — cheapest first |
 | `list_deals` | Models free to call right now, discounts, free credits and free tiers — each with its end date and official source; filter "ends within N days" |
-| `offers_table` | Every host serving one model, with the columns you choose (input, output, cache, discount, speed, first token, uptime, context, verified_at) |
+| `offers_table` | Every host serving one model, with the columns you choose (input, output, cache, discount, speed, first token, uptime, precision, context, max output, verified_at) |
 | `compare_models` | Two to four models side by side: lowest prices and who gives them, providers, fastest host, context, license, Epoch score, monthly cost |
 | `cheapest_at_level` | Cheapest models reaching an Epoch Capabilities Index score — or as good as a model you name |
 | `price_changes` | Price drops and rises over the last N days, and the models released in that time |
@@ -56,6 +56,12 @@ Or in any MCP client config:
 - Speed and availability are read from OpenRouter and always come with
   their window (median over 30 minutes, share of successful requests over
   24 hours). No tail latency or error rates.
+- What a host serves (weights precision, context, max output) is read at
+  the host's own catalogue or docs where its terms allow, otherwise as the
+  host declares to OpenRouter. Each value carries its state: `published`,
+  `not_stated` (the host's source does not state it), `not_read` (the
+  host's terms forbid automatic reading and OpenRouter has no value) or
+  `to_check`. Nothing is guessed.
 - One third-party score: the [Epoch Capabilities Index](https://epoch.ai/eci)
   by Epoch AI (CC BY 4.0). Every answer that carries it carries its credit.
   Otherwise, cost only: the index does not rank model quality.
@@ -65,6 +71,12 @@ Environment: `APIPRICEINDEX_URL` overrides the dataset URL (testing);
 
 ## Changelog
 
+- **0.3.0** — What each host serves of an open-weight model: `get_price`
+  returns `served.precision`, `served.context` and `served.max_output`,
+  each with its state, source and date, and the maker's values in
+  `served.maker`; `offers_table` takes `precision` and `max_output` columns,
+  and an empty served cell comes with `<column>_state`. Other answers
+  unchanged.
 - **0.2.1** — `get_price` and this README now say where prices are read:
   each provider's own price list, or OpenRouter's per-provider data, named
   by `source_url`. They said "official pricing pages", which was true of
